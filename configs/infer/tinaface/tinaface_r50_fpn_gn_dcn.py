@@ -96,7 +96,7 @@ infer_engine = dict(
     num_classes=num_classes,
     test_cfg=dict(
         min_bbox_size=0,
-        score_thr=0.4,
+        score_thr=0.5,
         nms=dict(
             typename='nms',
             iou_thr=0.45),
@@ -104,7 +104,11 @@ infer_engine = dict(
     use_sigmoid=use_sigmoid)
 
 # 4. weights
-weights = dict(filepath='your/weight/file/path')
+weights = dict(filepath='retinanet_r50.pth')
 
 # 5. show
 class_names = ('face', )
+
+# 6. mask classification model
+
+mask_checkpoint = '/content/drive/MyDrive/zalo-ai-challenge/mask_model_vgg19.epoch36-loss0.05.hdf5'

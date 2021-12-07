@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument('--config', help='Config file path')
     parser.add_argument('--dataframe', help='Dataframe contain labels')
     parser.add_argument('--dataroot', help='Root contain image')
-    parser.add_argument('--save_dir', help='Directory to save result')
+    parser.add_argument('--saving_dir', help='Directory to save result')
 
     args = parser.parse_args()
     return args
@@ -49,7 +49,7 @@ def crop2tensor(crop, device):
     return crop
 
 
-def plot_result(result, imgfp, mask_model, device, save_dir):
+def plot_result(result, imgfp, mask_model, device, saving_dir):
     bbox_color_map = {0: (0, 255, 0), 1: (0, 0, 255)}
     thickness = 2
 
@@ -86,7 +86,7 @@ def plot_result(result, imgfp, mask_model, device, save_dir):
             right_bottom = (xmax, ymax)
             cv2.rectangle(img, left_top, right_bottom, bbox_color_map[mask_result], thickness)
 
-    cv2.imwrite(os.path.join(save_dir, os.path.basename(imgfp)), img)
+    cv2.imwrite(os.path.join(saving_dir, os.path.basename(imgfp)), img)
 
     s = list(map(lambda x: x == 0., mask_cls))
     if any(s):
@@ -103,12 +103,12 @@ def main():
     mask_model = torch.load(cfg.mask_checkpoint)
     engine, data_pipeline, device = prepare(cfg)
 
-    dataframe = pd.read_csv(args.dataframe, index_col=0)
+    df = pd.read_csv(args.df, index_col=0)
     df_result = pd.DataFrame(columns=['fname', 'mask'])
-    if 'mask' in dataframe.columns:
+    if 'mask' in df.columns:
         df_comp = pd.DataFrame(columns=['fname', 'mask', 'gt_mask'])
 
-    for fname in dataframe['fname'].tolist():
+    for fname in df['fname'].tolist():
         img_path = os.path.join(args.dataroot, fname)
         data = dict(img_info=dict(filename=img_path), img_prefix=None)
 
@@ -123,15 +123,15 @@ def main():
             data['img'] = data['img'][0].data
         result = engine.infer(data['img'], data['img_metas'])[0]
 
-        label = plot_result(result, img_path, mask_model, device, save_dir)
+        label = plot_result(result, img_path, mask_model, device, saving_dir)
         df_result.append({'fname': fname, 'mask': label}, ignore_index=True)
-        if 'mask' in dataframe.columns:
-            gt_mask = dataframe.loc[dataframe['fname'] == fname]['mask'] 
+        if 'mask' in df.columns:
+            gt_mask = df.loc[df['fname'] == fname]['mask'] 
             if not np.isnan(gt_mask):
                 df_comp.append({'fname': fname, 'mask': label, 'gt_mask': gt_mask)}, ignore_index=True)
     
-    new_filename = os.path.splitext(args.dataframe)[0] + '_result'
-    df_result.to_csv(args.save_dir, new_filename)
+    new_filename = os.path.splitext(args.df)[0] + '_result'
+    df_result.to_csv(args.saving_dir, new_filename)
 
     pred = df_comp['mask'].tolist()
     gt = df_comp['gt_mask'].tolist()

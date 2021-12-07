@@ -110,5 +110,4 @@ weights = dict(filepath='retinanet_r50.pth')
 class_names = ('face', )
 
 # 6. mask classification model
-
-mask_checkpoint = '/content/drive/MyDrive/zalo-ai-challenge/mask_model_vgg19.epoch36-loss0.05.hdf5'
+mask_checkpoint = '/content/best_model_0.pt'

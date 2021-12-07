@@ -6,18 +6,22 @@ import numpy as np
 from numpy.core.numeric import outer
 import torch
 import pandas as pd
+import sklearn
+from torchvision.transforms import ToTensor
 
 from vedacore.image import imread, imwrite
 from vedacore.misc import Config, color_val, load_weights
 from vedacore.parallel import collate, scatter
 from vedadet.datasets.pipelines import Compose
 from vedadet.engines import build_engine
-from tensorflow.keras.models import load_model
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Infer a detector')
-    parser.add_argument('config', help='config file path')
-    parser.add_argument('dataframe', help='dataframe contain labels')
+    parser.add_argument('--config', help='Config file path')
+    parser.add_argument('--dataframe', help='Dataframe contain labels')
+    parser.add_argument('--dataroot', help='Root contain image')
+    parser.add_argument('--save_dir', help='Directory to save result')
 
     args = parser.parse_args()
     return args
@@ -37,9 +41,17 @@ def prepare(cfg):
     return engine, data_pipeline, device
 
 
-def plot_result(result, imgfp, mask_model):
+def crop2tensor(crop, device):
+    crop = cv2.resize(crop, (128, 128)) / 255.
+    crop = crop.astype(np.float32) 
+    crop = torch.unsqueeze(ToTensor()(crop), axis=0).to(device)
+
+    return crop
+
+
+def plot_result(result, imgfp, mask_model, device, save_dir):
     bbox_color_map = {0: (0, 255, 0), 1: (0, 0, 255)}
-    thickness = 1
+    thickness = 2
 
     img = imread(imgfp)
 
@@ -49,36 +61,38 @@ def plot_result(result, imgfp, mask_model):
         for idx, bbox in enumerate(result)
     ]
     labels = np.concatenate(labels)
-    h, w,_ = img.shape
+    h, w, _ = img.shape
 
+    crop_tensors = []
     mask_cls = []
     for bbox in bboxes:
         bbox_int = bbox[:4].astype(np.int32)
         xmin, ymin, xmax, ymax = bbox_int
-        
-        # Classify mask 
+
+        # Classify mask
         crop = img[ymin: ymax, xmin: xmax]
-        crop = cv2.resize(crop,(128,128))
-        crop = np.reshape(crop,[1,128,128,3])/255.0
-        mask_result = mask_model.predict(crop).argmax()
+        crop_tensors.append(crop2tensor(crop, device))
 
-        mask_cls.append(mask_result)
+    crop_tensors = torch.cat(crop_tensors, dim=0)
+    crop_batches = torch.split(crop_tensors, 8)
+    for crop_batch in crop_batches:
+        mask_results = mask_model(crop_batch)[0]
 
-        left_top = (xmin, ymin)
-        right_bottom = (xmax, ymax)
-        cv2.rectangle(img, left_top, right_bottom, bbox_color_map[mask_result], thickness)
-    
-    cv2.imwrite(os.path.join('/content/new_train', os.path.basename(imgfp)), img)
+        for mask_result in mask_results: 
+            mask_result = mask_result.detach().cpu().numpy()[0] > 0.5    
+            mask_cls.append(mask_result)
 
-    masked = None
-    s =  list(map(lambda x: x == 0., mask_cls))
-    if len(s) == 0:
-        masked = None
-    elif all(s):
-        masked = 1
-    elif any(s):
-        masked = 0
-    return masked
+            left_top = (xmin, ymin)
+            right_bottom = (xmax, ymax)
+            cv2.rectangle(img, left_top, right_bottom, bbox_color_map[mask_result], thickness)
+
+    cv2.imwrite(os.path.join(save_dir, os.path.basename(imgfp)), img)
+
+    s = list(map(lambda x: x == 0., mask_cls))
+    if any(s):
+        return 0
+    else:
+        return 1
 
 
 def main():
@@ -86,14 +100,16 @@ def main():
     cfg = Config.fromfile(args.config)
     class_names = cfg.class_names
 
-    mask_model = load_model(cfg.mask_checkpoint)
+    mask_model = torch.load(cfg.mask_checkpoint)
     engine, data_pipeline, device = prepare(cfg)
 
     dataframe = pd.read_csv(args.dataframe, index_col=0)
-    dataframe['fname'] = dataframe['fname'].apply(lambda x: os.path.join('/content/images', x))
+    df_result = pd.DataFrame(columns=['fname', 'mask'])
+    if 'mask' in dataframe.columns:
+        df_comp = pd.DataFrame(columns=['fname', 'mask', 'gt_mask'])
 
-    labels = []
-    for img_path in dataframe['fname'].tolist():
+    for fname in dataframe['fname'].tolist():
+        img_path = os.path.join(args.dataroot, fname)
         data = dict(img_info=dict(filename=img_path), img_prefix=None)
 
         data = data_pipeline(data)
@@ -106,10 +122,21 @@ def main():
             data['img_metas'] = data['img_metas'][0].data
             data['img'] = data['img'][0].data
         result = engine.infer(data['img'], data['img_metas'])[0]
-        label = plot_result(result, img_path, mask_model)
-        labels.append(label)
-    dataframe['real mask'] = labels
-    dataframe.to_csv('new_train_meta.csv')
+
+        label = plot_result(result, img_path, mask_model, device, save_dir)
+        df_result.append({'fname': fname, 'mask': label}, ignore_index=True)
+        if 'mask' in dataframe.columns:
+            gt_mask = dataframe.loc[dataframe['fname'] == fname]['mask'] 
+            if not np.isnan(gt_mask):
+                df_comp.append({'fname': fname, 'mask': label, 'gt_mask': gt_mask)}, ignore_index=True)
+    
+    new_filename = os.path.splitext(args.dataframe)[0] + '_result'
+    df_result.to_csv(args.save_dir, new_filename)
+
+    pred = df_comp['mask'].tolist()
+    gt = df_comp['gt_mask'].tolist()
+    print(sklearn.metrics.accuracy_score(pred, gt))
+
 
 if __name__ == '__main__':
     main()
